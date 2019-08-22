@@ -1,17 +1,15 @@
 [package]
-name = "lexer"
-version = "0.1.0"
 authors = ["Dean Karn <dean.karn@gmail.com>"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+name = "lexer"
+version = "0.1.0"
 
 [[bench]]
 harness = false
 name = "bench"
 
 [dependencies]
-
+failure = "0.1.5"
 
 [dev-dependencies]
 criterion = "0.2"
