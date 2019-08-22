@@ -2,8 +2,8 @@ use std::io;
 
 #[derive(Debug, PartialEq)]
 pub enum Token {
-    String(String),
-    Number(String),
+    String(Vec<u8>),
+    Number(Vec<u8>),
     Bool(bool),
     Null,
     ObjectStart,
@@ -106,10 +106,7 @@ where
                                 result.push(c);
                                 continue;
                             }
-                            return Some(Ok(match String::from_utf8(result) {
-                                Ok(s) => Token::String(s),
-                                Err(e) => Token::InvalidJSON(e.into_bytes()),
-                            }));
+                            return Some(Ok(Token::String(result)));
                         }
                         _ => {
                             if c == b'\\' {
@@ -340,39 +337,24 @@ where
                     };
                     match c {
                         b' ' | b'\n' => {
-                            return Some(Ok(match String::from_utf8(result) {
-                                Ok(s) => Token::Number(s),
-                                Err(e) => Token::InvalidJSON(e.into_bytes()),
-                            }))
+                            return Some(Ok(Token::Number(result)));
                         }
                         b'}' => {
                             self.next = Some(Token::ObjectEnd);
-                            return Some(Ok(match String::from_utf8(result) {
-                                Ok(s) => Token::Number(s),
-                                Err(e) => Token::InvalidJSON(e.into_bytes()),
-                            }));
+                            return Some(Ok(Token::Number(result)));
                         }
                         b']' => {
                             self.next = Some(Token::ArrayEnd);
-                            return Some(Ok(match String::from_utf8(result) {
-                                Ok(s) => Token::Number(s),
-                                Err(e) => Token::InvalidJSON(e.into_bytes()),
-                            }));
+                            return Some(Ok(Token::Number(result)));
                         }
                         b',' => {
                             self.next = Some(Token::Comma);
-                            return Some(Ok(match String::from_utf8(result) {
-                                Ok(s) => Token::Number(s),
-                                Err(e) => Token::InvalidJSON(e.into_bytes()),
-                            }));
+                            return Some(Ok(Token::Number(result)));
                         }
                         _ => result.push(c),
                     };
                 }
-                return Some(Ok(match String::from_utf8(result) {
-                    Ok(s) => Token::Number(s),
-                    Err(e) => Token::InvalidJSON(e.into_bytes()),
-                }));
+                return Some(Ok(Token::Number(result)));
             }
             _ => Token::InvalidJSON(Vec::new()),
         };
@@ -399,7 +381,7 @@ mod tests {
         let mut lexer = Document::new("\"test\"".as_bytes());
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::String(String::from("test"))
+            Token::String("test".as_bytes().to_vec())
         );
         assert_eq!(lexer.next().is_none(), true);
 
@@ -413,7 +395,7 @@ mod tests {
         let mut lexer = Document::new("\"test\\\"blah\\\"\"".as_bytes());
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::String(String::from("test\\\"blah\\\""))
+            Token::String("test\\\"blah\\\"".as_bytes().to_vec())
         );
     }
 
@@ -440,28 +422,28 @@ mod tests {
         let mut lexer = Document::new("1".as_bytes());
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::Number(String::from("1"))
+            Token::Number("1".as_bytes().to_vec())
         );
         assert_eq!(lexer.next().is_none(), true);
 
         let mut lexer = Document::new("1.23".as_bytes());
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::Number(String::from("1.23"))
+            Token::Number("1.23".as_bytes().to_vec())
         );
         assert_eq!(lexer.next().is_none(), true);
 
         let mut lexer = Document::new("-1.23".as_bytes());
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::Number(String::from("-1.23"))
+            Token::Number("-1.23".as_bytes().to_vec())
         );
         assert_eq!(lexer.next().is_none(), true);
 
         let mut lexer = Document::new("1.0E+2".as_bytes());
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::Number(String::from("1.0E+2"))
+            Token::Number("1.0E+2".as_bytes().to_vec())
         );
         assert_eq!(lexer.next().is_none(), true);
     }
@@ -471,14 +453,14 @@ mod tests {
         let mut lexer = Document::new("   1".as_bytes());
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::Number(String::from("1"))
+            Token::Number("1".as_bytes().to_vec())
         );
         assert_eq!(lexer.next().is_none(), true);
 
         let mut lexer = Document::new("\"   test\"".as_bytes());
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::String(String::from("   test"))
+            Token::String("   test".as_bytes().to_vec())
         );
         assert_eq!(lexer.next().is_none(), true);
     }
@@ -489,22 +471,22 @@ mod tests {
         assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::ObjectStart);
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::String(String::from("key"))
+            Token::String("key".as_bytes().to_vec())
         );
         assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::Colon);
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::String(String::from("value"))
+            Token::String("value".as_bytes().to_vec())
         );
         assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::Comma);
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::String(String::from("key2"))
+            Token::String("key2".as_bytes().to_vec())
         );
         assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::Colon);
         assert_eq!(
             lexer.next().unwrap().ok().unwrap(),
-            Token::String(String::from("value2"))
+            Token::String("value2".as_bytes().to_vec())
         );
         assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::ObjectEnd);
         assert_eq!(lexer.next().is_none(), true);

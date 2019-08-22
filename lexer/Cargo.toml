@@ -9,7 +9,6 @@ harness = false
 name = "bench"
 
 [dependencies]
-failure = "0.1.5"
 
 [dev-dependencies]
 criterion = "0.2"
