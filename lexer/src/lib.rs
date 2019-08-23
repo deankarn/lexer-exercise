@@ -13,6 +13,7 @@ pub enum Token {
     Colon,
     Comma,
     InvalidJSON(Vec<u8>),
+    IOError(String), // should be io::Error but....
 }
 
 #[derive(Debug)]
@@ -35,51 +36,60 @@ where
         }
     }
 
-    fn next_byte(&mut self) -> Option<Result<u8, io::Error>> {
+    fn next_byte(&mut self) -> Result<u8, Option<io::Error>> {
         let res = self.reader.read(&mut self.buff);
         match res {
-            Err(_) => Some(Err(res.err().unwrap())),
+            Err(e) => Err(Some(e)),
             Ok(bytes) => {
                 if bytes == 0 {
-                    None
+                    Err(None)
                 } else {
-                    Some(Ok(self.buff[0]))
+                    Ok(self.buff[0])
                 }
             }
         }
     }
 }
 
+macro_rules! next_byte {
+    ($slf:ident, $ret:expr) => {
+        match $slf.next_byte() {
+            Ok(c) => c,
+            Err(e) => match e {
+                Some(e) => return Some(Token::IOError(e.to_string())),
+                None => return $ret,
+            },
+        };
+    };
+}
+
 impl<R> Iterator for Document<R>
 where
     R: io::Read,
 {
-    type Item = Result<Token, io::Error>;
+    type Item = Token;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.next.is_some() {
-            return Some(Ok(self.next.take().unwrap()));
+            return Some(self.next.take().unwrap());
         }
 
-        let result = self.next_byte()?;
-        let mut c = match result {
-            Ok(c) => c,
-            Err(e) => return Some(Err(e)),
-        };
+        //        let mut c = match self.next_byte() {
+        //            Ok(c) => c,
+        //            Err(e) => match e {
+        //                Some(e) => Ok(Token::IOError(e.to_string())),
+        //                None => return None,
+        //            },
+        //        };
+        let mut c = next_byte!(self, None);
+
         // eat whitespace
         if c == b' ' {
-            'outer: loop {
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    match c {
-                        b' ' => continue,
-                        _ => break 'outer,
-                    }
-                } else {
-                    return None;
+            loop {
+                c = next_byte!(self, None);
+                match c {
+                    b' ' => continue,
+                    _ => break,
                 }
             }
         }
@@ -92,273 +102,220 @@ where
             b':' => Token::Colon,
             b'"' => {
                 let mut result = Vec::with_capacity(5);
-                let mut prev_underscore = false;
+                let mut prev_backslash = false;
 
-                while let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
+                loop {
+                    c = next_byte!(self, Some(Token::InvalidJSON(result))); // if we hit the end here there was no ending quote
                     match c {
                         b'"' => {
-                            if prev_underscore {
-                                prev_underscore = false;
+                            if prev_backslash {
+                                prev_backslash = false;
                                 result.push(c);
                                 continue;
                             }
-                            return Some(Ok(Token::String(result)));
+                            return Some(Token::String(result));
                         }
                         _ => {
                             if c == b'\\' {
-                                prev_underscore = true;
+                                prev_backslash = true;
                             }
                             result.push(c)
                         }
                     };
                 }
-                // if we get here there was no ending quote
-                Token::InvalidJSON(result)
+                //                Token::InvalidJSON(result)
             }
             b't' => {
                 let mut result = Vec::with_capacity(5);
+                result.push(c);
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    result.push(c);
-                    match c {
-                        b'r' => {}
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                }
+                c = next_byte!(self, None);
+                result.push(c);
+                match c {
+                    b'r' => {}
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    result.push(c);
-                    match c {
-                        b'u' => {}
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                }
+                c = next_byte!(self, None);
+                result.push(c);
+                match c {
+                    b'u' => {}
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    result.push(c);
-                    match c {
-                        b'e' => {}
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                }
+                c = next_byte!(self, None);
+                result.push(c);
+                match c {
+                    b'e' => {}
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    match c {
-                        b' ' | b'\n' => return Some(Ok(Token::Bool(true))),
-                        b'}' => {
-                            self.next = Some(Token::ObjectEnd);
-                            return Some(Ok(Token::Bool(true)));
-                        }
-                        b']' => {
-                            self.next = Some(Token::ArrayEnd);
-                            return Some(Ok(Token::Bool(true)));
-                        }
-                        b',' => {
-                            self.next = Some(Token::Comma);
-                            return Some(Ok(Token::Bool(true)));
-                        }
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                } else {
-                    // if at end we've verified it's a good bool value already
-                    Token::Bool(true)
-                }
+                //                c = match self.next_byte() {
+                //                    NextByte::None => return Some(Token::Bool(true)),
+                //                    NextByte::IOError(e) => return Some(e),
+                //                    NextByte::Result(c) => c,
+                //                };
+                //                c = match self.next_byte() {
+                //                    Ok(c) => c,
+                //                    Err(e) => match e {
+                //                        Some(e) => Ok(Token::IOError(e.to_string())),
+                //                        None => return Some(Token::Bool(true)),
+                //                    },
+                //                };
+                c = next_byte!(self, Some(Token::Bool(true)));
+                match c {
+                    b' ' | b'\n' => return Some(Token::Bool(true)),
+                    b'}' => {
+                        self.next = Some(Token::ObjectEnd);
+                        return Some(Token::Bool(true));
+                    }
+                    b']' => {
+                        self.next = Some(Token::ArrayEnd);
+                        return Some(Token::Bool(true));
+                    }
+                    b',' => {
+                        self.next = Some(Token::Comma);
+                        return Some(Token::Bool(true));
+                    }
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
             }
             b'f' => {
                 let mut result = Vec::with_capacity(5);
+                result.push(c);
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    result.push(c);
-                    match c {
-                        b'a' => {}
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                }
+                c = next_byte!(self, None);
+                result.push(c);
+                match c {
+                    b'a' => {}
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    result.push(c);
-                    match c {
-                        b'l' => {}
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                }
+                c = next_byte!(self, None);
+                result.push(c);
+                match c {
+                    b'l' => {}
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    result.push(c);
-                    match c {
-                        b's' => {}
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                }
+                c = next_byte!(self, None);
+                result.push(c);
+                match c {
+                    b's' => {}
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    result.push(c);
-                    match c {
-                        b'e' => {}
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                }
+                c = next_byte!(self, None);
+                result.push(c);
+                match c {
+                    b'e' => {}
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    match c {
-                        b' ' | b'\n' => return Some(Ok(Token::Bool(false))),
-                        b'}' => {
-                            self.next = Some(Token::ObjectEnd);
-                            return Some(Ok(Token::Bool(false)));
-                        }
-                        b']' => {
-                            self.next = Some(Token::ArrayEnd);
-                            return Some(Ok(Token::Bool(false)));
-                        }
-                        b',' => {
-                            self.next = Some(Token::Comma);
-                            return Some(Ok(Token::Bool(false)));
-                        }
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                } else {
-                    // if at end we've verified it's a good bool value already
-                    Token::Bool(false)
-                }
+                //                c = match self.next_wrap() {
+                //                    NextByte::None => return Some(Token::Bool(false)),
+                //                    NextByte::IOError(e) => return Some(e),
+                //                    NextByte::Result(c) => c,
+                //                };
+                c = next_byte!(self, Some(Token::Bool(false)));
+                match c {
+                    b' ' | b'\n' => return Some(Token::Bool(false)),
+                    b'}' => {
+                        self.next = Some(Token::ObjectEnd);
+                        return Some(Token::Bool(false));
+                    }
+                    b']' => {
+                        self.next = Some(Token::ArrayEnd);
+                        return Some(Token::Bool(false));
+                    }
+                    b',' => {
+                        self.next = Some(Token::Comma);
+                        return Some(Token::Bool(false));
+                    }
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
             }
             b'n' => {
                 let mut result = Vec::with_capacity(5);
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    result.push(c);
-                    match c {
-                        b'u' => {}
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                }
+                c = next_byte!(self, None);
+                result.push(c);
+                match c {
+                    b'u' => {}
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    result.push(c);
-                    match c {
-                        b'l' => {}
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                }
+                c = next_byte!(self, None);
+                result.push(c);
+                match c {
+                    b'l' => {}
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    result.push(c);
-                    match c {
-                        b'l' => {}
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                }
+                c = next_byte!(self, None);
+                result.push(c);
+                match c {
+                    b'l' => {}
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
 
-                if let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    match c {
-                        b' ' | b'\n' => return Some(Ok(Token::Null)),
-                        b'}' => {
-                            self.next = Some(Token::ObjectEnd);
-                            return Some(Ok(Token::Null));
-                        }
-                        b']' => {
-                            self.next = Some(Token::ArrayEnd);
-                            return Some(Ok(Token::Null));
-                        }
-                        b',' => {
-                            self.next = Some(Token::Comma);
-                            return Some(Ok(Token::Null));
-                        }
-                        _ => return Some(Ok(Token::InvalidJSON(result))),
-                    };
-                } else {
-                    // if at end we've verified it's a good bool value already
-                    Token::Null
-                }
+                //                c = match self.next_wrap() {
+                //                    NextByte::None => return Some(Token::Null),
+                //                    NextByte::IOError(e) => return Some(e),
+                //                    NextByte::Result(c) => c,
+                //                };
+                c = next_byte!(self, Some(Token::Null));
+                match c {
+                    b' ' | b'\n' => return Some(Token::Null),
+                    b'}' => {
+                        self.next = Some(Token::ObjectEnd);
+                        return Some(Token::Null);
+                    }
+                    b']' => {
+                        self.next = Some(Token::ArrayEnd);
+                        return Some(Token::Null);
+                    }
+                    b',' => {
+                        self.next = Some(Token::Comma);
+                        return Some(Token::Null);
+                    }
+                    _ => return Some(Token::InvalidJSON(result)),
+                };
             }
             b'0'..=b'9' | b'-' | b'+' | b'.' | b'E' | b'e' => {
                 let mut result = Vec::with_capacity(5);
                 result.push(c);
 
-                while let Some(current) = self.next_byte() {
-                    c = match current {
-                        Ok(c) => c,
-                        Err(e) => return Some(Err(e)),
-                    };
+                loop {
+                    c = next_byte!(self, Some(Token::Number(result)));
+                    //                    c = match self.next_wrap() {
+                    //                        NextByte::None => return Some(Token::Number(result)),
+                    //                        NextByte::IOError(e) => return Some(e),
+                    //                        NextByte::Result(c) => c,
+                    //                    };
                     match c {
                         b' ' | b'\n' => {
-                            return Some(Ok(Token::Number(result)));
+                            return Some(Token::Number(result));
                         }
                         b'}' => {
                             self.next = Some(Token::ObjectEnd);
-                            return Some(Ok(Token::Number(result)));
+                            return Some(Token::Number(result));
                         }
                         b']' => {
                             self.next = Some(Token::ArrayEnd);
-                            return Some(Ok(Token::Number(result)));
+                            return Some(Token::Number(result));
                         }
                         b',' => {
                             self.next = Some(Token::Comma);
-                            return Some(Ok(Token::Number(result)));
+                            return Some(Token::Number(result));
                         }
                         _ => result.push(c),
                     };
                 }
-                return Some(Ok(Token::Number(result)));
             }
             _ => Token::InvalidJSON(Vec::new()),
         };
-        Some(Ok(result))
+        Some(result)
     }
 }
 
@@ -370,125 +327,115 @@ mod tests {
     #[test]
     fn it_works() {
         let mut lexer = Document::new("{}".as_bytes());
-
-        assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::ObjectStart);
-        assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::ObjectEnd);
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), Some(Token::ObjectStart));
+        assert_eq!(lexer.next(), Some(Token::ObjectEnd));
+        assert_eq!(lexer.next(), None);
     }
 
     #[test]
     fn it_works_string() {
         let mut lexer = Document::new("\"test\"".as_bytes());
         assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::String("test".as_bytes().to_vec())
+            lexer.next(),
+            Some(Token::String("test".as_bytes().to_vec()))
         );
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), None);
 
         let mut lexer = Document::new("\"test".as_bytes());
         assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::InvalidJSON(String::from("test").into_bytes())
+            lexer.next(),
+            Some(Token::InvalidJSON(String::from("test").into_bytes()))
         );
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), None);
 
         let mut lexer = Document::new("\"test\\\"blah\\\"\"".as_bytes());
         assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::String("test\\\"blah\\\"".as_bytes().to_vec())
+            lexer.next(),
+            Some(Token::String("test\\\"blah\\\"".as_bytes().to_vec()))
         );
     }
 
     #[test]
     fn it_works_bool() {
         let mut lexer = Document::new("true".as_bytes());
-        assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::Bool(true));
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), Some(Token::Bool(true)));
+        assert_eq!(lexer.next(), None);
 
         let mut lexer = Document::new("false".as_bytes());
-        assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::Bool(false));
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), Some(Token::Bool(false)));
+        assert_eq!(lexer.next(), None);
     }
 
     #[test]
     fn it_works_null() {
         let mut lexer = Document::new("null".as_bytes());
-        assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::Null);
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), Some(Token::Null));
+        assert_eq!(lexer.next(), None);
     }
 
     #[test]
     fn it_works_number() {
         let mut lexer = Document::new("1".as_bytes());
-        assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::Number("1".as_bytes().to_vec())
-        );
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), Some(Token::Number("1".as_bytes().to_vec())));
+        assert_eq!(lexer.next(), None);
 
         let mut lexer = Document::new("1.23".as_bytes());
         assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::Number("1.23".as_bytes().to_vec())
+            lexer.next(),
+            Some(Token::Number("1.23".as_bytes().to_vec()))
         );
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), None);
 
         let mut lexer = Document::new("-1.23".as_bytes());
         assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::Number("-1.23".as_bytes().to_vec())
+            lexer.next(),
+            Some(Token::Number("-1.23".as_bytes().to_vec()))
         );
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), None);
 
         let mut lexer = Document::new("1.0E+2".as_bytes());
         assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::Number("1.0E+2".as_bytes().to_vec())
+            lexer.next(),
+            Some(Token::Number("1.0E+2".as_bytes().to_vec()))
         );
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), None);
     }
 
     #[test]
     fn it_works_whitespace() {
         let mut lexer = Document::new("   1".as_bytes());
-        assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::Number("1".as_bytes().to_vec())
-        );
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), Some(Token::Number("1".as_bytes().to_vec())));
+        assert_eq!(lexer.next(), None);
 
         let mut lexer = Document::new("\"   test\"".as_bytes());
         assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::String("   test".as_bytes().to_vec())
+            lexer.next(),
+            Some(Token::String("   test".as_bytes().to_vec()))
         );
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), None);
     }
 
     #[test]
     fn it_works_comma_colon_whitespace() {
         let mut lexer = Document::new("{ \"key\":\"value\", \"key2\":\"value2\" }".as_bytes());
-        assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::ObjectStart);
+        assert_eq!(lexer.next(), Some(Token::ObjectStart));
+        assert_eq!(lexer.next(), Some(Token::String("key".as_bytes().to_vec())));
+        assert_eq!(lexer.next(), Some(Token::Colon));
         assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::String("key".as_bytes().to_vec())
+            lexer.next(),
+            Some(Token::String("value".as_bytes().to_vec()))
         );
-        assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::Colon);
+        assert_eq!(lexer.next(), Some(Token::Comma));
         assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::String("value".as_bytes().to_vec())
+            lexer.next(),
+            Some(Token::String("key2".as_bytes().to_vec()))
         );
-        assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::Comma);
+        assert_eq!(lexer.next(), Some(Token::Colon));
         assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::String("key2".as_bytes().to_vec())
+            lexer.next(),
+            Some(Token::String("value2".as_bytes().to_vec()))
         );
-        assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::Colon);
-        assert_eq!(
-            lexer.next().unwrap().ok().unwrap(),
-            Token::String("value2".as_bytes().to_vec())
-        );
-        assert_eq!(lexer.next().unwrap().ok().unwrap(), Token::ObjectEnd);
-        assert_eq!(lexer.next().is_none(), true);
+        assert_eq!(lexer.next(), Some(Token::ObjectEnd));
+        assert_eq!(lexer.next(), None);
     }
 }
